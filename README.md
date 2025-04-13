@@ -1,2 +1,2 @@
-# website_v2
-Personal Website
+# ᏇᎥᏝᏝ ᏕᏗᎷᎧᏕᎥᏒ
+Repo for personal website
