@@ -1,53 +1,32 @@
-* {
-  margin: 0;
-  padding: 0;
+:root {
+  --bg: #000;
+  --fg: #f0f0f0;
+  --accent: #ffffff;
+  --muted: #555;
+  --gap: clamp(1rem, 4vw, 2.5rem);
+  --radius: 4px;
+}
+
+*, *::before, *::after {
   box-sizing: border-box;
-}
-
-/* Reset and base styles for full viewport display */
-:global(html, body) {
   margin: 0;
   padding: 0;
-  width: 100%;
+}
+
+html, body {
   height: 100%;
-  overflow: hidden;
-  font-family: 'Helvetica Neue', Arial, sans-serif;
-  background-color: #000; /* black background for GLSL art */
-  color: #fff;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: 'Courier New', monospace;
+  font-size: clamp(13px, 1.5vw, 16px);
+  -webkit-font-smoothing: antialiased;
 }
 
-/* The container for your entire app */
-:global(#app) {
-  width: 100vw;
-  height: 100vh;
-  position: relative;
+a {
+  color: inherit;
+  text-decoration: none;
 }
 
-/* Ensure your canvas fills the container completely */
 canvas {
   display: block;
-  width: 100%;
-  height: 100%;
-}
-
-/* Responsive settings using media queries */
-/* Mobile Devices */
-@media only screen and (max-width: 600px) {
-  :global(html) {
-    font-size: 14px;
-  }
-}
-
-/* Tablet Devices */
-@media only screen and (min-width: 601px) and (max-width: 1024px) {
-  :global(html) {
-    font-size: 16px;
-  }
-}
-
-/* Desktop Devices */
-@media only screen and (min-width: 1025px) {
-  :global(html) {
-    font-size: 18px;
-  }
 }
