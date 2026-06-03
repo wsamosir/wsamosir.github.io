@@ -11,10 +11,11 @@ const config = {
       fallback: '404.html',
     }),
     prerender: {
-      handleHttpError: ({ path, referrer, message }) => {
+      handleHttpError: ({ path, message }) => {
         if (path === '/favicon.ico') return;
         throw new Error(message);
       },
+      handleUnseenRoutes: () => {},
     },
   },
 };
