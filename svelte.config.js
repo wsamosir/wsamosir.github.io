@@ -10,6 +10,12 @@ const config = {
       assets: 'build',
       fallback: '404.html',
     }),
+    prerender: {
+      handleHttpError: ({ path, referrer, message }) => {
+        if (path === '/favicon.ico') return;
+        throw new Error(message);
+      },
+    },
   },
 };
 
