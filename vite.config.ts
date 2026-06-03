@@ -4,4 +4,5 @@ import glsl from 'vite-plugin-glsl';
 
 export default defineConfig({
   plugins: [sveltekit(), glsl()],
+  server: { port: 5190, strictPort: true },
 });

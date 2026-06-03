@@ -8,7 +8,14 @@
   const N = TEXT.length;
   const SUBSTEPS = 1;
 
+  // ── Eye state ─────────────────────────────────────────────────────────────
+  let eyeActive = $state(false);
+  let eyeNX     = $state(0.5);
+  let eyeNY     = $state(0.5);
+
   // ── Exposed uniforms (bound to sliders) ──────────────────────────────────
+  let funcView     = $state(false);
+
   let damping      = $state(0.9981);
   let srcAmp       = $state(1.0);
   let speedScale   = $state(1.55);
@@ -33,6 +40,7 @@
     uniform vec2  u_res;
     uniform float u_threshold;
     uniform float u_time;
+    uniform int   u_funcView;
     varying vec2 v_uv;
 
     float wv(vec2 uv) {
@@ -171,6 +179,13 @@
     // ── Main ──────────────────────────────────────────────────────────────────
 
     void main() {
+      if (u_funcView == 1) {
+        float w = wv(v_uv) * 2.0 - 1.0; // -1..1
+        float bright = w * 0.5 + 0.5;
+        gl_FragColor = vec4(vec3(bright), 1.0);
+        return;
+      }
+
       vec2 pp = v_uv * u_res;
 
       float chosen = 8.0;
@@ -305,6 +320,11 @@
       uniform float u_freqScale;
       uniform float u_omega[${N}];
       uniform float u_c2[${N}];
+      uniform float u_eyeX;
+      uniform float u_eyeY;
+      uniform float u_eyeActive;
+      uniform float u_eyeOmega;
+      uniform float u_eyeRadius;
       varying vec2 v_uv;
       void main() {
         float curr = texture2D(u_wave, v_uv).r * 2.0 - 1.0;
@@ -323,7 +343,19 @@
 
         // clamp effective c2 to 0.49 to stay numerically stable regardless of slider
         float effectiveC2 = min(localC2 * u_speedScale, 0.49);
-        float next = (2.0*curr - prev + effectiveC2*(n + s + e + w - 4.0*curr)) * u_damping;
+        vec2  eyeVec  = v_uv - vec2(u_eyeX, 1.0 - u_eyeY);
+        float rawDist = length(eyeVec);
+        float angle   = atan(eyeVec.y, eyeVec.x);
+        float ts      = float(u_simStep) * 0.007;
+        float blob    = 1.0
+          + 0.28 * sin(angle * 3.0 + ts * 0.6)
+          + 0.16 * sin(angle * 5.0 - ts * 0.4)
+          + 0.10 * sin(angle * 7.0 + ts * 0.9);
+        float eyeDist = u_eyeActive > 0.5 ? rawDist / max(blob, 0.3) : 1.0;
+        float eyeZone = smoothstep(u_eyeRadius + 0.4, 0.0, eyeDist);
+        float activeC2   = mix(effectiveC2, 0.49, eyeZone);
+        float activeDamping = mix(u_damping, 1.0, eyeZone);
+        float next = (2.0*curr - prev + activeC2*(n + s + e + w - 4.0*curr)) * activeDamping;
         next = clamp(next, -1.0, 1.0);
 
         float isText = texture2D(u_text, v_uv).r;
@@ -333,6 +365,9 @@
           next = sin(u_simStep * localOmega * u_freqScale) * u_srcAmp;
         }
 
+        if (u_eyeActive > 0.5 && eyeDist < u_eyeRadius) {
+          next = sin(u_simStep * u_eyeOmega) * 1.0;
+        }
 gl_FragColor = vec4(next * 0.5 + 0.5, curr * 0.5 + 0.5, 0.0, 1.0);
       }
     `;
@@ -400,12 +435,18 @@ gl_FragColor = vec4(next * 0.5 + 0.5, curr * 0.5 + 0.5, 0.0, 1.0);
       freqScale:  gl.getUniformLocation(waveProg, 'u_freqScale'),
       omega:      gl.getUniformLocation(waveProg, 'u_omega'),
       c2:         gl.getUniformLocation(waveProg, 'u_c2'),
+      eyeX:      gl.getUniformLocation(waveProg, 'u_eyeX'),
+      eyeY:      gl.getUniformLocation(waveProg, 'u_eyeY'),
+      eyeActive: gl.getUniformLocation(waveProg, 'u_eyeActive'),
+      eyeOmega:  gl.getUniformLocation(waveProg, 'u_eyeOmega'),
+      eyeRadius: gl.getUniformLocation(waveProg, 'u_eyeRadius'),
     };
     const dLoc = {
       wave:      gl.getUniformLocation(displayProg, 'u_wave'),
       res:       gl.getUniformLocation(displayProg, 'u_res'),
       threshold: gl.getUniformLocation(displayProg, 'u_threshold'),
       time:      gl.getUniformLocation(displayProg, 'u_time'),
+      funcView:  gl.getUniformLocation(displayProg, 'u_funcView'),
     };
     const startTime = performance.now();
 
@@ -464,6 +505,12 @@ let W = 0, H = 0;
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     }
 
+    // ── Eye ───────────────────────────────────────────────────────────────────
+    let eyeOmegaVal  = 0.3;
+    let eyeRadiusVal = 0.008;
+    let eyeTimeout: ReturnType<typeof setTimeout> | null = null;
+    let pressStart   = 0;
+
     const ro = new ResizeObserver(() => {
       W = canvas.width  = Math.round(canvas.clientWidth  * devicePixelRatio);
       H = canvas.height = Math.round(canvas.clientHeight * devicePixelRatio);
@@ -473,12 +520,33 @@ let W = 0, H = 0;
     });
     ro.observe(canvas);
 
+    canvas.addEventListener('mousedown', (e) => {
+      const rect = canvas.getBoundingClientRect();
+      eyeNX        = (e.clientX - rect.left) / rect.width;
+      eyeNY        = (e.clientY - rect.top)  / rect.height;
+      eyeRadiusVal = 0.008;
+      eyeOmegaVal  = 0.25 + Math.random() * 0.25;
+      eyeActive    = true;
+      pressStart   = performance.now();
+      if (eyeTimeout) { clearTimeout(eyeTimeout); eyeTimeout = null; }
+    });
+
+    canvas.addEventListener('mouseup', () => {
+      pressStart = 0;
+      eyeActive  = false;
+    });
+
     let raf: number;
 
     function frame() {
       if (!textTex || !waveBufs) { raf = requestAnimationFrame(frame); return; }
 
       const nowMs = performance.now();
+
+      if (pressStart > 0) {
+        const t = Math.min((nowMs - pressStart) / 2000, 1);
+        eyeRadiusVal = 0.008 + t * (0.3 - 0.008);
+      }
 
       let fontChanged = false;
       for (let i = 0; i < N; i++) {
@@ -528,6 +596,11 @@ let W = 0, H = 0;
         gl.uniform1f(wLoc.freqScale,  freqScale);
         gl.uniform1fv(wLoc.omega, omega);
         gl.uniform1fv(wLoc.c2, c2);
+        gl.uniform1f(wLoc.eyeX,      eyeNX);
+        gl.uniform1f(wLoc.eyeY,      eyeNY);
+        gl.uniform1f(wLoc.eyeActive, eyeActive ? 1.0 : 0.0);
+        gl.uniform1f(wLoc.eyeOmega,  eyeOmegaVal);
+        gl.uniform1f(wLoc.eyeRadius, eyeRadiusVal);
 
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
         waveIdx = dst;
@@ -545,6 +618,7 @@ let W = 0, H = 0;
       gl.uniform2f(dLoc.res, W, H);
       gl.uniform1f(dLoc.threshold, threshold);
       gl.uniform1f(dLoc.time, (performance.now() - startTime) / 1000.0);
+      gl.uniform1i(dLoc.funcView, funcView ? 1 : 0);
 
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
       raf = requestAnimationFrame(frame);
@@ -559,6 +633,9 @@ let W = 0, H = 0;
   <canvas bind:this={canvas}></canvas>
 
   <div class="controls">
+    <button class="view-toggle" onclick={() => funcView = !funcView}>
+      {funcView ? 'function' : 'shape'}
+    </button>
     <label>
       <span class="name">damping</span>
       <input type="range" min="0.990" max="0.9999" step="0.0001" bind:value={damping} />
@@ -655,6 +732,26 @@ let W = 0, H = 0;
     background: #fff;
     border: none;
     cursor: pointer;
+  }
+
+
+  .view-toggle {
+    font-size: 0.68rem;
+    padding: 0.2rem 0.6rem;
+    border: 1px solid #555;
+    border-radius: 3px;
+    background: transparent;
+    color: #aaa;
+    cursor: pointer;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    align-self: flex-end;
+    margin-bottom: 0.4rem;
+  }
+
+  .view-toggle:hover {
+    border-color: #fff;
+    color: #fff;
   }
 
   .val {
