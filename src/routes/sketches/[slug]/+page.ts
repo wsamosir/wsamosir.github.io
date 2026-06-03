@@ -1,6 +1,10 @@
 import { getSketch } from '$lib/sketches';
+import sketches from '$lib/sketches';
 import { error } from '@sveltejs/kit';
-import type { PageLoad } from './$types';
+import type { EntryGenerator, PageLoad } from './$types';
+
+export const entries: EntryGenerator = () =>
+  sketches.map((s) => ({ slug: s.meta.slug }));
 
 export const load: PageLoad = ({ params }) => {
   const sketch = getSketch(params.slug);
