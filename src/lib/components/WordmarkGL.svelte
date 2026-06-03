@@ -9,12 +9,12 @@
   const SUBSTEPS = 1;
 
   // ── Exposed uniforms (bound to sliders) ──────────────────────────────────
-  let damping    = $state(0.9985);
-  let srcAmp     = $state(0.88);
-  let gamma      = $state(0.65);
-  let brightness = $state(0.85);
-  let speedScale = $state(1.0);   // scales per-letter c2 (wave propagation speed)
-  let freqScale  = $state(1.0);   // scales per-letter omega (source frequency → wavelength)
+  let damping    = $state(0.9981);
+  let srcAmp     = $state(1.0);
+  let speedScale = $state(1.55);
+  let freqScale  = $state(0.1);
+  let threshold  = $state(0.12);
+  const outlineW = 1.0;
 
   // ── Shaders ───────────────────────────────────────────────────────────────
 
@@ -30,14 +30,219 @@
   const DISPLAY_FRAG = /* glsl */ `
     precision highp float;
     uniform sampler2D u_wave;
-    uniform sampler2D u_text;
-    uniform float u_gamma;
-    uniform float u_brightness;
+    uniform vec2  u_res;
+    uniform float u_threshold;
+    uniform float u_time;
     varying vec2 v_uv;
+
+    float wv(vec2 uv) {
+      return texture2D(u_wave, clamp(uv, 0.001, 0.999)).r;
+    }
+
+    // ── Colormaps ─────────────────────────────────────────────────────────────
+
+    vec3 viridis(float t) {
+      return clamp(
+        vec3(0.2777,0.0054,0.3341)
+        +t*(vec3(0.1051,1.4046,1.3846)
+        +t*(vec3(-0.3309,0.2148,0.0951)
+        +t*(vec3(-4.6342,-5.7991,-19.3324)
+        +t*(vec3(6.2283,14.1799,56.6906)
+        +t*(vec3(4.7764,-13.7451,-65.3530)
+        +t*vec3(-5.4355,4.6459,26.3124)))))),
+        0.0, 1.0);
+    }
+
+    vec3 turbo(float t) {
+      t = clamp(t, 0.0, 1.0);
+      vec4 v4 = vec4(1.0, t, t*t, t*t*t);
+      vec2 v2 = v4.zw * v4.z;
+      return clamp(vec3(
+        dot(v4, vec4(0.13572,4.61539,-42.66032,132.13108)) + dot(v2, vec2(-152.94239,59.28638)),
+        dot(v4, vec4(0.09140,2.19419,  4.84297,-14.18655)) + dot(v2, vec2(   4.27730, 2.82957)),
+        dot(v4, vec4(0.10667,12.64195,-60.58205,110.36277)) + dot(v2, vec2( -89.90311,27.34825))
+      ), 0.0, 1.0);
+    }
+
+    vec3 blues(float t) {
+      float u = t*t*(3.0 - 2.0*t);
+      return mix(vec3(0.97,0.98,1.00), vec3(0.03,0.19,0.42), u);
+    }
+
+    vec3 reds(float t) {
+      float u = t*t*(3.0 - 2.0*t);
+      return mix(vec3(1.00,0.96,0.94), vec3(0.40,0.00,0.05), u);
+    }
+
+    vec3 coolwarm(float t) {
+      return t < 0.5
+        ? mix(vec3(0.23,0.30,0.75), vec3(0.87,0.87,0.87), t*2.0)
+        : mix(vec3(0.87,0.87,0.87), vec3(0.71,0.11,0.11), t*2.0-1.0);
+    }
+
+    vec3 pinkgreen(float t) {
+      return t < 0.5
+        ? mix(vec3(0.76,0.10,0.36), vec3(0.97,0.97,0.97), t*2.0)
+        : mix(vec3(0.97,0.97,0.97), vec3(0.13,0.53,0.21), t*2.0-1.0);
+    }
+
+    vec3 phase(float t) {
+      float a = t * 6.28318;
+      return clamp(vec3(
+        0.5 + 0.5*sin(a + 0.000),
+        0.5 + 0.5*sin(a + 2.094),
+        0.5 + 0.5*sin(a + 4.189)
+      ), 0.0, 1.0);
+    }
+
+    vec3 spectral(float t) {
+      t = clamp(t, 0.0, 0.9999);
+      float s = t * 9.0; float i = floor(s); float f = fract(s);
+      vec3 a, b;
+      if      (i < 1.0) { a=vec3(0.62,0.00,0.26); b=vec3(0.84,0.19,0.15); }
+      else if (i < 2.0) { a=vec3(0.84,0.19,0.15); b=vec3(0.96,0.43,0.26); }
+      else if (i < 3.0) { a=vec3(0.96,0.43,0.26); b=vec3(0.99,0.68,0.38); }
+      else if (i < 4.0) { a=vec3(0.99,0.68,0.38); b=vec3(1.00,0.88,0.55); }
+      else if (i < 5.0) { a=vec3(1.00,0.88,0.55); b=vec3(0.90,0.96,0.60); }
+      else if (i < 6.0) { a=vec3(0.90,0.96,0.60); b=vec3(0.67,0.87,0.64); }
+      else if (i < 7.0) { a=vec3(0.67,0.87,0.64); b=vec3(0.40,0.76,0.64); }
+      else if (i < 8.0) { a=vec3(0.40,0.76,0.64); b=vec3(0.20,0.53,0.74); }
+      else               { a=vec3(0.20,0.53,0.74); b=vec3(0.37,0.31,0.64); }
+      return mix(a, b, f);
+    }
+
+    vec3 rainbow(float t) {
+      float h = t * 6.0;
+      return clamp(vec3(
+        abs(h - 3.0) - 1.0,
+        2.0 - abs(h - 2.0),
+        2.0 - abs(h - 4.0)
+      ), 0.0, 1.0);
+    }
+
+    vec3 jet(float t) {
+      return clamp(vec3(
+        1.5 - abs(4.0*t - 3.0),
+        1.5 - abs(4.0*t - 2.0),
+        1.5 - abs(4.0*t - 1.0)
+      ), 0.0, 1.0);
+    }
+
+    vec3 palette(int idx, float t) {
+      vec3 c = turbo(t);
+      if      (idx == 0) c = viridis(t);
+      else if (idx == 1) c = blues(t);
+      else if (idx == 2) c = reds(t);
+      else if (idx == 3) c = coolwarm(t);
+      else if (idx == 4) c = pinkgreen(t);
+      else if (idx == 5) c = phase(t);
+      else if (idx == 6) c = spectral(t);
+      else if (idx == 7) c = rainbow(t);
+      else if (idx == 8) c = jet(t);
+      return c;
+    }
+
+    // ── Size levels (all multiples of 8 → boundaries always globally align) ──
+
+    float sizeAt(int i) {
+      if (i == 0) return 128.0;
+      if (i == 1) return 96.0;
+      if (i == 2) return 64.0;
+      if (i == 3) return 48.0;
+      if (i == 4) return 32.0;
+      if (i == 5) return 24.0;
+      if (i == 6) return 16.0;
+      if (i == 7) return 12.0;
+      return 8.0;
+    }
+
+    // One level down in the hierarchy
+    float nextSize(float s) {
+      if (s > 96.0) return 96.0;
+      if (s > 64.0) return 64.0;
+      if (s > 48.0) return 48.0;
+      if (s > 32.0) return 32.0;
+      if (s > 24.0) return 24.0;
+      if (s > 16.0) return 16.0;
+      if (s > 12.0) return 12.0;
+      return 8.0;
+    }
+
+    // ── Main ──────────────────────────────────────────────────────────────────
+
     void main() {
-      float waveH = texture2D(u_wave, v_uv).r * 2.0 - 1.0;
-      float wave  = pow(max(0.0, waveH), u_gamma) * u_brightness;
-      gl_FragColor = vec4(vec3(wave), 1.0);
+      vec2 pp = v_uv * u_res;
+
+      float chosen = 8.0;
+      bool found   = false;
+      for (int i = 0; i < 9; i++) {
+        if (!found) {
+          float s  = sizeAt(i);
+          vec2 bc  = (floor(pp / s) + 0.5) * s / u_res;
+          float dx = s / u_res.x;
+          float dy = s / u_res.y;
+          float a = wv(bc);
+          float b = wv(bc + vec2( dx,  0.0));
+          float c = wv(bc + vec2(-dx,  0.0));
+          float d = wv(bc + vec2(0.0,  dy));
+          float e = wv(bc + vec2(0.0, -dy));
+          float hi = max(a, max(b, max(c, max(d, e))));
+          float lo = min(a, min(b, min(c, min(d, e))));
+          if (hi - lo < u_threshold) { chosen = s; found = true; }
+        }
+      }
+
+      // t: large block (128) → 0, small block (8) → 1
+      float t = 1.0 - (log2(chosen) - 3.0) / 4.0;
+
+      // Use the wave amplitude at this block's centre to spatially offset the
+      // colormap cycle — wave crests lead, troughs trail, calm areas are neutral.
+      vec2 blockCen = (floor(pp / chosen) + 0.5) * chosen / u_res;
+      float waveAmp = wv(blockCen) * 2.0 - 1.0; // decode R channel → -1..1
+      float localTime = u_time + waveAmp * 5.0;  // ±1 full colormap slot offset
+
+      // Cycle through 10 colormaps, 5 s each, blend over last 30% of each slot
+      float pos   = mod(localTime / 5.0, 10.0);
+      int   mapA  = int(pos);
+      int   mapB  = (mapA == 9) ? 0 : mapA + 1;
+      float blend = smoothstep(0.7, 1.0, fract(pos));
+      vec3  col   = mix(palette(mapA, t), palette(mapB, t), blend);
+
+      vec2 cell = fract(pp / chosen);
+      vec2 cc   = cell - 0.5;    // centred cell coords ∈ [-0.5, 0.5]
+      float bw  = 0.07;
+
+      // ── Shape: square ↔ circle driven by gradient isotropy ─────────────────
+      float gdx = chosen / u_res.x;
+      float gdy = chosen / u_res.y;
+      float gx  = wv(blockCen + vec2(gdx, 0.0)) - wv(blockCen - vec2(gdx, 0.0));
+      float gy  = wv(blockCen + vec2(0.0, gdy)) - wv(blockCen - vec2(0.0, gdy));
+      float gxx = gx * gx, gyy = gy * gy;
+      float circleBlend = smoothstep(0.2, 0.8,
+        1.0 - abs(gxx - gyy) / (gxx + gyy + 0.0001));
+
+      float sqSdf  = max(abs(cc.x), abs(cc.y));
+      float cirSdf = length(cc);
+      float sdf    = mix(sqSdf, cirSdf, circleBlend);
+
+      bool outside = sdf > 0.5;
+      bool edge    = !outside && sdf > (0.5 - bw);
+
+      vec3 fillCol = clamp(col * 0.55, 0.0, 1.0);
+      vec3 edgeCol = clamp(col * 1.5,  0.0, 1.0);
+
+      // Corners of circular blocks: show the next smaller block level as a square
+      float chosenSub = nextSize(chosen);
+      float tSub      = 1.0 - (log2(chosenSub) - 3.0) / 4.0;
+      vec3  colSub    = mix(palette(mapA, tSub), palette(mapB, tSub), blend);
+      vec2  cc2       = fract(pp / chosenSub) - 0.5;
+      float sqSdf2    = max(abs(cc2.x), abs(cc2.y));
+      vec3  subRgb    = (sqSdf2 > 0.5 - bw)
+                          ? clamp(colSub * 1.5, 0.0, 1.0)
+                          : colSub * 0.55;
+
+      vec3 rgb = edge ? edgeCol : fillCol;
+      gl_FragColor = vec4(outside ? subRgb : rgb, 1.0);
     }
   `;
 
@@ -115,7 +320,7 @@
           next = sin(u_simStep * localOmega * u_freqScale) * u_srcAmp;
         }
 
-        gl_FragColor = vec4(next * 0.5 + 0.5, curr * 0.5 + 0.5, 0.0, 1.0);
+gl_FragColor = vec4(next * 0.5 + 0.5, curr * 0.5 + 0.5, 0.0, 1.0);
       }
     `;
 
@@ -184,13 +389,15 @@
       c2:         gl.getUniformLocation(waveProg, 'u_c2'),
     };
     const dLoc = {
-      wave:       gl.getUniformLocation(displayProg, 'u_wave'),
-      text:       gl.getUniformLocation(displayProg, 'u_text'),
-      gamma:      gl.getUniformLocation(displayProg, 'u_gamma'),
-      brightness: gl.getUniformLocation(displayProg, 'u_brightness'),
+      wave:      gl.getUniformLocation(displayProg, 'u_wave'),
+      res:       gl.getUniformLocation(displayProg, 'u_res'),
+      threshold: gl.getUniformLocation(displayProg, 'u_threshold'),
+      time:      gl.getUniformLocation(displayProg, 'u_time'),
     };
+    const startTime = performance.now();
 
-    let W = 0, H = 0;
+
+let W = 0, H = 0;
     let gridX0 = 0, gridY0 = 0, cellFracX = 1, cellFracY = 1, numCols = N;
     let textTex!: WebGLTexture;
     let waveBufs!: [{ tex: WebGLTexture; fbo: WebGLFramebuffer }, { tex: WebGLTexture; fbo: WebGLFramebuffer }];
@@ -320,12 +527,11 @@
       bindQuad(displayProg);
 
       gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, waveBufs[waveIdx].tex);
-      gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, textTex);
 
       gl.uniform1i(dLoc.wave, 0);
-      gl.uniform1i(dLoc.text, 1);
-      gl.uniform1f(dLoc.gamma,      gamma);
-      gl.uniform1f(dLoc.brightness, brightness);
+      gl.uniform2f(dLoc.res, W, H);
+      gl.uniform1f(dLoc.threshold, threshold);
+      gl.uniform1f(dLoc.time, (performance.now() - startTime) / 1000.0);
 
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
       raf = requestAnimationFrame(frame);
@@ -351,16 +557,6 @@
       <span class="val">{srcAmp.toFixed(2)}</span>
     </label>
     <label>
-      <span class="name">gamma</span>
-      <input type="range" min="0.1" max="2.0" step="0.05" bind:value={gamma} />
-      <span class="val">{gamma.toFixed(2)}</span>
-    </label>
-    <label>
-      <span class="name">brightness</span>
-      <input type="range" min="0.1" max="3.0" step="0.05" bind:value={brightness} />
-      <span class="val">{brightness.toFixed(2)}</span>
-    </label>
-    <label>
       <span class="name">speed</span>
       <input type="range" min="0.1" max="4.0" step="0.05" bind:value={speedScale} />
       <span class="val">{speedScale.toFixed(2)}</span>
@@ -369,6 +565,11 @@
       <span class="name">frequency</span>
       <input type="range" min="0.1" max="6.0" step="0.1" bind:value={freqScale} />
       <span class="val">{freqScale.toFixed(1)}</span>
+    </label>
+    <label>
+      <span class="name">threshold</span>
+      <input type="range" min="0.002" max="0.12" step="0.001" bind:value={threshold} />
+      <span class="val">{threshold.toFixed(3)}</span>
     </label>
   </div>
 </div>
