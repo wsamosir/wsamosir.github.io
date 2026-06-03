@@ -16,6 +16,8 @@
   // ── Exposed uniforms (bound to sliders) ──────────────────────────────────
   let funcView     = $state(false);
 
+  let saturation   = $state(1.0);
+
   let damping      = $state(0.9981);
   let srcAmp       = $state(1.0);
   let speedScale   = $state(1.55);
@@ -41,6 +43,7 @@
     uniform float u_threshold;
     uniform float u_time;
     uniform int   u_funcView;
+    uniform float u_saturation;
     varying vec2 v_uv;
 
     float wv(vec2 uv) {
@@ -270,7 +273,10 @@
                           : colSub * 0.55;
 
       vec3 rgb = edge ? edgeCol : fillCol;
-      gl_FragColor = vec4(outside ? subRgb : rgb, 1.0);
+      vec3 finalRgb = outside ? subRgb : rgb;
+      float luma = dot(finalRgb, vec3(0.299, 0.587, 0.114));
+      finalRgb = mix(vec3(luma), finalRgb, u_saturation);
+      gl_FragColor = vec4(finalRgb, 1.0);
     }
   `;
 
@@ -446,7 +452,8 @@ gl_FragColor = vec4(next * 0.5 + 0.5, curr * 0.5 + 0.5, 0.0, 1.0);
       res:       gl.getUniformLocation(displayProg, 'u_res'),
       threshold: gl.getUniformLocation(displayProg, 'u_threshold'),
       time:      gl.getUniformLocation(displayProg, 'u_time'),
-      funcView:  gl.getUniformLocation(displayProg, 'u_funcView'),
+      funcView:    gl.getUniformLocation(displayProg, 'u_funcView'),
+      saturation:  gl.getUniformLocation(displayProg, 'u_saturation'),
     };
     const startTime = performance.now();
 
@@ -618,7 +625,8 @@ let W = 0, H = 0;
       gl.uniform2f(dLoc.res, W, H);
       gl.uniform1f(dLoc.threshold, threshold);
       gl.uniform1f(dLoc.time, (performance.now() - startTime) / 1000.0);
-      gl.uniform1i(dLoc.funcView, funcView ? 1 : 0);
+      gl.uniform1i(dLoc.funcView,   funcView ? 1 : 0);
+      gl.uniform1f(dLoc.saturation, saturation);
 
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
       raf = requestAnimationFrame(frame);
@@ -636,6 +644,11 @@ let W = 0, H = 0;
     <button class="view-toggle" onclick={() => funcView = !funcView}>
       {funcView ? 'function' : 'shape'}
     </button>
+    <label>
+      <span class="name">saturation</span>
+      <input type="range" min="0" max="2" step="0.01" bind:value={saturation} />
+      <span class="val">{saturation.toFixed(2)}</span>
+    </label>
     <label>
       <span class="name">damping</span>
       <input type="range" min="0.990" max="0.9999" step="0.0001" bind:value={damping} />
