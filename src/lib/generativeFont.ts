@@ -146,6 +146,55 @@ function perturbStroke(stroke: Stroke, rng: () => number, amount: number): Strok
   ]);
 }
 
+// Extend a stroke slightly past its endpoints — pen overshoot / fast writing
+function overshootStroke(stroke: Stroke, amount: number): Stroke {
+  if (stroke.length < 2) return stroke;
+  const [x0, y0] = stroke[0];
+  const [x1, y1] = stroke[1];
+  const [xn1, yn1] = stroke[stroke.length - 2];
+  const [xn, yn] = stroke[stroke.length - 1];
+  const head: Point = [x0 - (x1 - x0) * amount, y0 - (y1 - y0) * amount];
+  const tail: Point = [xn + (xn - xn1) * amount, yn + (yn - yn1) * amount];
+  return [head, ...stroke, tail];
+}
+
+// Draw stroke with pressure-like width variation: thicker on downstrokes (dy > 0), thinner on upstrokes
+function drawSplineWithPressure(
+  ctx: CanvasRenderingContext2D,
+  pts: Point[],
+  baseWidth: number,
+  rng: () => number
+) {
+  if (pts.length < 2) return;
+  const STEPS = 12;
+  const p: Point[] = [pts[0], ...pts, pts[pts.length - 1]];
+
+  ctx.beginPath();
+  ctx.moveTo(pts[0][0], pts[0][1]);
+
+  for (let i = 1; i < p.length - 2; i++) {
+    const t0 = 0, t1 = 1 / STEPS;
+    // sample direction at midpoint of this segment
+    const mx = (p[i][0] + p[i + 1][0]) / 2;
+    const my = (p[i][1] + p[i + 1][1]) / 2;
+    const dy = p[i + 1][1] - p[i][1];
+    // downstroke (dy > 0) → thicker; upstroke (dy < 0) → thinner
+    const pressureFactor = 0.7 + 0.6 * Math.max(0, Math.sign(dy));
+    ctx.lineWidth = baseWidth * pressureFactor * (0.85 + rng() * 0.3);
+
+    const cp1x = p[i][0] + (p[i + 1][0] - p[i - 1][0]) / 6;
+    const cp1y = p[i][1] + (p[i + 1][1] - p[i - 1][1]) / 6;
+    const cp2x = p[i + 1][0] - (p[i + 2][0] - p[i][0]) / 6;
+    const cp2y = p[i + 1][1] - (p[i + 2][1] - p[i][1]) / 6;
+
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(p[i][0], p[i][1]);
+    ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p[i + 1][0], p[i + 1][1]);
+  }
+  ctx.stroke();
+}
+
 export function drawGlyph(
   ctx: CanvasRenderingContext2D,
   char: string,
@@ -165,10 +214,19 @@ export function drawGlyph(
   const ox = cx - slotW / 2 + slotW * pad;
   const oy = cy - slotH / 2 + slotH * pad;
 
-  const toCanvas = ([nx, ny]: Point): Point => [ox + nx * scaleX, oy + ny * scaleY];
+  // italic shear: full range, backward to forward
+  const shear = (rng() - 0.5) * 0.50;
+
+  const toCanvas = ([nx, ny]: Point): Point => [
+    ox + nx * scaleX + (ny - 0.5) * shear * slotH,
+    oy + ny * scaleY,
+  ];
 
   const baseWidth = Math.min(slotW, slotH) * 0.072;
-  const noiseAmt = 0.022 + rng() * 0.026;
+  // expanded noise range: 0.018 to 0.072 — allows both tight and loose results
+  const noiseAmt = 0.018 + rng() * 0.054;
+  const overshoot = 0.04 + rng() * 0.12;
+  const usePressure = rng() > 0.35; // ~65% of seeds get calligraphic pressure
 
   ctx.save();
   ctx.lineCap = 'round';
@@ -176,15 +234,21 @@ export function drawGlyph(
   ctx.strokeStyle = '#fff';
 
   for (const stroke of strokes) {
-    // Primary pass
-    const pts1 = perturbStroke(stroke, rng, noiseAmt).map(toCanvas);
-    ctx.lineWidth = baseWidth * (0.88 + rng() * 0.24);
-    ctx.globalAlpha = 0.82 + rng() * 0.18;
-    drawSpline(ctx, pts1);
-    ctx.stroke();
+    const perturbed = overshootStroke(perturbStroke(stroke, rng, noiseAmt), overshoot);
+    const pts1 = perturbed.map(toCanvas);
 
-    // Offset shadow pass — gives the layered ink feel
-    const pts2 = perturbStroke(stroke, rng, noiseAmt * 0.7).map(toCanvas);
+    ctx.globalAlpha = 0.82 + rng() * 0.18;
+
+    if (usePressure) {
+      drawSplineWithPressure(ctx, pts1, baseWidth * (0.88 + rng() * 0.24), rng);
+    } else {
+      ctx.lineWidth = baseWidth * (0.88 + rng() * 0.24);
+      drawSpline(ctx, pts1);
+      ctx.stroke();
+    }
+
+    // Offset shadow pass — layered ink feel
+    const pts2 = overshootStroke(perturbStroke(stroke, rng, noiseAmt * 0.7), overshoot * 0.5).map(toCanvas);
     ctx.lineWidth = baseWidth * (0.28 + rng() * 0.32);
     ctx.globalAlpha = 0.28 + rng() * 0.22;
     drawSpline(ctx, pts2);

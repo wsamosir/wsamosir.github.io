@@ -9,11 +9,11 @@
   const SUBSTEPS = 1;
 
   // ── Exposed uniforms (bound to sliders) ──────────────────────────────────
-  let damping    = $state(0.9981);
-  let srcAmp     = $state(1.0);
-  let speedScale = $state(1.55);
-  let freqScale  = $state(0.1);
-  let threshold  = $state(0.12);
+  let damping      = $state(0.9981);
+  let srcAmp       = $state(1.0);
+  let speedScale   = $state(1.55);
+  let freqScale    = $state(0.1);
+  let threshold    = $state(0.12);
   const outlineW = 1.0;
 
   // ── Shaders ───────────────────────────────────────────────────────────────
@@ -212,18 +212,31 @@
       vec2 cc   = cell - 0.5;    // centred cell coords ∈ [-0.5, 0.5]
       float bw  = 0.07;
 
-      // ── Shape: square ↔ circle driven by gradient isotropy ─────────────────
+      // ── Shape: star ↔ square ↔ circle driven by gradient structure ──────────
       float gdx = chosen / u_res.x;
       float gdy = chosen / u_res.y;
-      float gx  = wv(blockCen + vec2(gdx, 0.0)) - wv(blockCen - vec2(gdx, 0.0));
-      float gy  = wv(blockCen + vec2(0.0, gdy)) - wv(blockCen - vec2(0.0, gdy));
+      float gx  = wv(blockCen + vec2(gdx, 0.0))  - wv(blockCen - vec2(gdx, 0.0));
+      float gy  = wv(blockCen + vec2(0.0, gdy))  - wv(blockCen - vec2(0.0, gdy));
+      float gne = wv(blockCen + vec2(gdx,  gdy)) - wv(blockCen - vec2(gdx,  gdy));
+      float gnw = wv(blockCen + vec2(-gdx, gdy)) - wv(blockCen - vec2(-gdx, gdy));
       float gxx = gx * gx, gyy = gy * gy;
+      float EA  = gxx + gyy;
+      float ED  = gne * gne + gnw * gnw;
+
+      // axis isotropy → circle (same as before)
       float circleBlend = smoothstep(0.2, 0.8,
-        1.0 - abs(gxx - gyy) / (gxx + gyy + 0.0001));
+        1.0 - abs(gxx - gyy) / (EA + 0.0001));
+
+      // diagonal dominance → star/plus; exponent drops toward 0.1 as signal strengthens
+      float diagRatio = clamp((ED - EA) / (ED + EA + 0.0001), 0.0, 1.0);
+      float axisWeight = 1.0 - smoothstep(0.1, 0.6, diagRatio);
+      float starP  = mix(0.667, 0.1, smoothstep(0.1, 0.9, diagRatio));
 
       float sqSdf  = max(abs(cc.x), abs(cc.y));
       float cirSdf = length(cc);
-      float sdf    = mix(sqSdf, cirSdf, circleBlend);
+      // Lp norm with variable p: 2/3 → astroid, ~0.1 → plus sign
+      float astSdf = pow(pow(abs(cc.x), starP) + pow(abs(cc.y), starP), 1.0 / starP);
+      float sdf    = mix(astSdf, mix(sqSdf, cirSdf, circleBlend), axisWeight);
 
       bool outside = sdf > 0.5;
       bool edge    = !outside && sdf > (0.5 - bw);
@@ -650,4 +663,5 @@ let W = 0, H = 0;
     text-align: right;
     font-variant-numeric: tabular-nums;
   }
+
 </style>
